@@ -39,12 +39,12 @@ pnpm run watch         # Watch mode (tsc -watch -p ./)
 
 ### Commands & Keybindings
 
-| Command ID                         | Key      | Behavior                               |
-| ---------------------------------- | -------- | -------------------------------------- |
-| `editorGroupGrid.focusTopLeft`     | `Ctrl+1` | Focus first group (ViewColumn.One)     |
-| `editorGroupGrid.focusBottomLeft`  | `Ctrl+2` | Focus/create bottom-left group         |
-| `editorGroupGrid.focusTopRight`    | `Ctrl+3` | Focus/create top-right group           |
-| `editorGroupGrid.focusBottomRight` | `Ctrl+4` | Focus/create bottom-right group        |
+| Command ID                         | Key      | Behavior                           |
+| ---------------------------------- | -------- | ---------------------------------- |
+| `editorGroupGrid.focusTopLeft`     | `Ctrl+1` | Focus first group (ViewColumn.One) |
+| `editorGroupGrid.focusBottomLeft`  | `Ctrl+2` | Focus/create bottom-left group     |
+| `editorGroupGrid.focusTopRight`    | `Ctrl+3` | Focus/create top-right group       |
+| `editorGroupGrid.focusBottomRight` | `Ctrl+4` | Focus/create bottom-right group    |
 
 ### Identifier-Based Focus
 
@@ -53,23 +53,49 @@ pnpm run watch         # Watch mode (tsc -watch -p ./)
 - If not → create appropriate layout, detect new `viewColumn` via before/after diff, record it.
 - `onDidChangeTabGroups` cleans up `slotMap` when groups are closed.
 
-### ViewColumn Remapping
+### ViewColumn Mapping by Layout Type
 
-`setEditorLayout` reassigns `viewColumn` values in depth-first order, which can silently
-move existing groups to different indices. To handle this:
+`setEditorLayout` reassigns `viewColumn` values in depth-first order. Instead of tracking
+groups by their tab content (fingerprints), this extension uses **explicit layout-type-based
+mapping** to determine which `viewColumn` corresponds to each logical position.
 
-1. Before layout change: `snapshotSlots()` saves tab-content fingerprints (file URIs) per slot.
-2. After layout change: `remapSlotsByFingerprint()` matches fingerprints to find each
-   group's new `viewColumn` and updates `slotMap`.
-3. New groups (not matched by any fingerprint) are returned by `changeLayout()` for assignment.
+`getLayoutSlotMapping(layoutType)` returns the correct slot→ViewColumn mapping for each layout:
+
+| Layout Type   | topLeft | bottomLeft | topRight | bottomRight |
+| ------------- | ------- | ---------- | -------- | ----------- |
+| `vertical2`   | 1       | 2          | —        | —           |
+| `horizontal2` | 1       | —          | 2        | —           |
+| `leftSplit3`  | 1       | 2          | 3        | —           |
+| `topSplit3`   | 1       | 3          | 2        | —           |
+| `2x2`         | 1       | 2          | 3        | 4           |
+
+After each `setEditorLayout` call, `changeLayout()` overwrites `slotMap` with the correct
+mapping based on the layout type, ensuring shortcut keys always point to the correct
+visual positions regardless of how VS Code internally assigns ViewColumn numbers.
 
 ### Layout Progression
 
+Basic layout transitions:
+
 ```
 1 group  →  Ctrl+2: vertical 2-split    |  Ctrl+3: horizontal 2-split
-2 groups →  Ctrl+2: left-split 3-pane   |  Ctrl+3: top-split 3-pane
+2 groups →  conditional 3-pane (see below)
 3 groups →  Ctrl+4: 2x2 grid
 ```
+
+**Conditional Layout Selection (2 → 3 groups):**
+
+To preserve the visual position of existing groups, layout is selected based on `slotMap` state:
+
+| Action | Existing slotMap | Layout Used  | Reason                               |
+| ------ | ---------------- | ------------ | ------------------------------------ |
+| Ctrl+2 | no bottomLeft    | `leftSplit3` | Default left-side vertical split     |
+| Ctrl+2 | has topRight     | `topSplit3`  | Preserves topRight at ViewColumn 2   |
+| Ctrl+3 | no topRight      | `topSplit3`  | Default top-side horizontal split    |
+| Ctrl+3 | has bottomLeft   | `leftSplit3` | Preserves bottomLeft at ViewColumn 2 |
+
+This conditional logic ensures that when pressing `Ctrl+2` → `Ctrl+3` in sequence,
+the bottomLeft group created first remains at the same visual position (bottom-left).
 
 ### Key APIs
 
@@ -95,12 +121,12 @@ move existing groups to different indices. To handle this:
 
 ### Naming Conventions
 
-| Kind                | Convention  | Examples                                        |
-| ------------------- | ----------- | ----------------------------------------------- |
-| Functions           | camelCase   | `groupExists`, `getEditorLayout`, `tryFocusSlot`|
-| Variables/constants | camelCase   | `slotMap`, `focusCommands`, `newCols`            |
-| Interfaces          | PascalCase  | `EditorGroupLayout`                             |
-| Type aliases        | PascalCase  | `SlotName`                                      |
+| Kind                | Convention | Examples                                         |
+| ------------------- | ---------- | ------------------------------------------------ |
+| Functions           | camelCase  | `groupExists`, `getEditorLayout`, `tryFocusSlot` |
+| Variables/constants | camelCase  | `slotMap`, `focusCommands`, `newCols`            |
+| Interfaces          | PascalCase | `EditorGroupLayout`                              |
+| Type aliases        | PascalCase | `SlotName`                                       |
 
 - Prefix getters with `get` (`get2x2Layout`, `getEditorLayout`).
 - Prefix setters with `set` (`setEditorLayout`).
@@ -174,4 +200,3 @@ move existing groups to different indices. To handle this:
 4. Check commands registered: `Ctrl+Shift+P` → type "Grid:"
 5. Check dev console: `Ctrl+Shift+P` → "Developer: Toggle Developer Tools"
 6. Check keybinding conflicts: `Ctrl+Shift+P` → "Preferences: Open Keyboard Shortcuts"
-

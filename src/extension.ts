@@ -54,65 +54,6 @@ async function focusByViewColumn(viewColumn: vscode.ViewColumn): Promise<void> {
   }
 }
 
-/**
- * グループのタブ内容からフィンガープリント文字列を生成する。
- * タブの URI を結合した文字列で、グループの同一性を判定するために使う。
- */
-function getGroupFingerprint(group: vscode.TabGroup): string {
-  return group.tabs
-    .map((tab) => {
-      const input = tab.input;
-      if (input && typeof input === 'object' && 'uri' in input) {
-        return (input as { uri: vscode.Uri }).uri.toString();
-      }
-      return '';
-    })
-    .join('|');
-}
-
-/**
- * 全スロットの viewColumn → フィンガープリントのスナップショットを取得
- */
-function snapshotSlots(): Map<SlotName, string> {
-  const snapshot = new Map<SlotName, string>();
-  for (const [slot, viewColumn] of slotMap.entries()) {
-    const group = vscode.window.tabGroups.all.find((g) => g.viewColumn === viewColumn);
-    if (group) {
-      snapshot.set(slot, getGroupFingerprint(group));
-    }
-  }
-  return snapshot;
-}
-
-/**
- * レイアウト変更後にフィンガープリントを使って slotMap を再マッピングする。
- * 既存グループの viewColumn が振り直されている場合、タブ内容が一致する
- * グループを探して viewColumn を更新する。
- */
-function remapSlotsByFingerprint(snapshot: Map<SlotName, string>): void {
-  const currentGroups = vscode.window.tabGroups.all;
-
-  for (const [slot, oldFingerprint] of snapshot.entries()) {
-    // 空のフィンガープリントはスキップ（タブなしのグループは区別できない）
-    if (!oldFingerprint) continue;
-
-    const oldCol = slotMap.get(slot);
-    // 現在の viewColumn で一致するグループがあればそのまま
-    const currentGroup = currentGroups.find((g) => g.viewColumn === oldCol);
-    if (currentGroup && getGroupFingerprint(currentGroup) === oldFingerprint) {
-      continue;
-    }
-
-    // viewColumn がずれた場合: フィンガープリントが一致するグループを探す
-    const matchedGroup = currentGroups.find(
-      (g) => getGroupFingerprint(g) === oldFingerprint,
-    );
-    if (matchedGroup) {
-      slotMap.set(slot, matchedGroup.viewColumn);
-    }
-  }
-}
-
 // --- レイアウト定義 ---
 
 function getVertical2Layout(): EditorGroupLayout {
@@ -175,6 +116,54 @@ function get2x2Layout(): EditorGroupLayout {
   };
 }
 
+// --- レイアウトタイプと ViewColumn の位置関係 ---
+type LayoutType = 'vertical2' | 'horizontal2' | 'leftSplit3' | 'topSplit3' | '2x2';
+
+/**
+ * 各レイアウトタイプにおける、論理的なスロット位置と ViewColumn の対応を返す。
+ * VS Code は深さ優先順で ViewColumn を割り当てるため、レイアウト構造から決定できる。
+ */
+function getLayoutSlotMapping(layoutType: LayoutType): Map<SlotName, vscode.ViewColumn> {
+  const mapping = new Map<SlotName, vscode.ViewColumn>();
+
+  switch (layoutType) {
+    case 'vertical2':
+      // [1: 上] [2: 下]
+      mapping.set('topLeft', vscode.ViewColumn.One);
+      mapping.set('bottomLeft', vscode.ViewColumn.Two);
+      break;
+    case 'horizontal2':
+      // [1: 左] [2: 右]
+      mapping.set('topLeft', vscode.ViewColumn.One);
+      mapping.set('topRight', vscode.ViewColumn.Two);
+      break;
+    case 'leftSplit3':
+      // [1: 左上] [3: 右（全高）]
+      // [2: 左下]
+      mapping.set('topLeft', vscode.ViewColumn.One);
+      mapping.set('bottomLeft', vscode.ViewColumn.Two);
+      mapping.set('topRight', vscode.ViewColumn.Three);
+      break;
+    case 'topSplit3':
+      // [1: 左上] [2: 右上]
+      // [3: 下（全幅）]
+      mapping.set('topLeft', vscode.ViewColumn.One);
+      mapping.set('topRight', vscode.ViewColumn.Two);
+      mapping.set('bottomLeft', vscode.ViewColumn.Three);
+      break;
+    case '2x2':
+      // [1: 左上] [3: 右上]
+      // [2: 左下] [4: 右下]
+      mapping.set('topLeft', vscode.ViewColumn.One);
+      mapping.set('bottomLeft', vscode.ViewColumn.Two);
+      mapping.set('topRight', vscode.ViewColumn.Three);
+      mapping.set('bottomRight', vscode.ViewColumn.Four);
+      break;
+  }
+
+  return mapping;
+}
+
 // --- レイアウト操作 ---
 
 async function getEditorLayout(): Promise<EditorGroupLayout | undefined> {
@@ -205,29 +194,37 @@ function countGroups(layout: EditorGroupLayout | undefined): number {
 }
 
 /**
- * レイアウトを変更し、新しく作成されたグループの viewColumn を返す。
- * 既存スロットの viewColumn が振り直された場合はタブ内容で再マッピングする。
+ * レイアウトを変更し、レイアウトタイプに基づいて slotMap を正しく再設定する。
+ * 新しく作成されたスロットの一覧を返す。
  */
-async function changeLayout(layout: EditorGroupLayout): Promise<vscode.ViewColumn[]> {
-  // 変更前のタブ内容スナップショットを保存
-  const snapshot = snapshotSlots();
-
+async function changeLayout(
+  layout: EditorGroupLayout,
+  layoutType: LayoutType,
+): Promise<SlotName[]> {
   await setEditorLayout(layout);
   // レイアウト変更が反映されるまで待つ
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  // タブ内容で既存スロットの viewColumn を再マッピング
-  remapSlotsByFingerprint(snapshot);
+  // レイアウトタイプに基づいて正しい ViewColumn マッピングを取得
+  const correctMapping = getLayoutSlotMapping(layoutType);
 
-  // 再マッピング後の slotMap に登録済みの viewColumn は新規ではない
-  const registeredCols = new Set(slotMap.values());
-  const newCols: vscode.ViewColumn[] = [];
-  for (const group of vscode.window.tabGroups.all) {
-    if (!registeredCols.has(group.viewColumn)) {
-      newCols.push(group.viewColumn);
+  // 変更前に登録されていたスロットを記録
+  const previousSlots = new Set(slotMap.keys());
+
+  // slotMap を正しいマッピングで上書き（フィンガープリントに頼らない）
+  slotMap.clear();
+  for (const [slot, viewColumn] of correctMapping.entries()) {
+    slotMap.set(slot, viewColumn);
+  }
+
+  // 新しく追加されたスロットを返す
+  const newSlots: SlotName[] = [];
+  for (const slot of correctMapping.keys()) {
+    if (!previousSlots.has(slot)) {
+      newSlots.push(slot);
     }
   }
-  return newCols;
+  return newSlots;
 }
 
 /**
@@ -279,20 +276,31 @@ export function activate(context: vscode.ExtensionContext) {
       const groupCount = countGroups(layout);
 
       let targetLayout: EditorGroupLayout;
+      let layoutType: LayoutType;
       if (groupCount === 1) {
         targetLayout = getVertical2Layout();
+        layoutType = 'vertical2';
       } else if (groupCount === 2) {
-        targetLayout = getLeftSplit3Layout();
+        // topRight が既に存在する場合（horizontal2）は topSplit3 を使用
+        // （topRight の ViewColumn 2 を維持するため）
+        // bottomLeft のみ追加する場合は leftSplit3
+        if (slotMap.has('topRight')) {
+          targetLayout = getTopSplit3Layout();
+          layoutType = 'topSplit3';
+        } else {
+          targetLayout = getLeftSplit3Layout();
+          layoutType = 'leftSplit3';
+        }
       } else {
         targetLayout = get2x2Layout();
+        layoutType = '2x2';
       }
 
-      const newCols = await changeLayout(targetLayout);
+      await changeLayout(targetLayout, layoutType);
 
-      if (newCols.length > 0) {
-        newCols.sort((a, b) => a - b);
-        const bottomLeftCol = newCols[0];
-        slotMap.set('bottomLeft', bottomLeftCol);
+      // changeLayout が slotMap を設定済みなので、直接フォーカス
+      const bottomLeftCol = slotMap.get('bottomLeft');
+      if (bottomLeftCol !== undefined) {
         await focusByViewColumn(bottomLeftCol);
       }
     },
@@ -314,20 +322,31 @@ export function activate(context: vscode.ExtensionContext) {
       const groupCount = countGroups(layout);
 
       let targetLayout: EditorGroupLayout;
+      let layoutType: LayoutType;
       if (groupCount === 1) {
         targetLayout = getHorizontal2Layout();
+        layoutType = 'horizontal2';
       } else if (groupCount === 2) {
-        targetLayout = getTopSplit3Layout();
+        // bottomLeft が既に存在する場合（vertical2）は leftSplit3 を使用
+        // （bottomLeft の ViewColumn 2 を維持するため）
+        // topRight のみ追加する場合は topSplit3
+        if (slotMap.has('bottomLeft')) {
+          targetLayout = getLeftSplit3Layout();
+          layoutType = 'leftSplit3';
+        } else {
+          targetLayout = getTopSplit3Layout();
+          layoutType = 'topSplit3';
+        }
       } else {
         targetLayout = get2x2Layout();
+        layoutType = '2x2';
       }
 
-      const newCols = await changeLayout(targetLayout);
+      await changeLayout(targetLayout, layoutType);
 
-      if (newCols.length > 0) {
-        newCols.sort((a, b) => a - b);
-        const topRightCol = newCols[0];
-        slotMap.set('topRight', topRightCol);
+      // changeLayout が slotMap を設定済みなので、直接フォーカス
+      const topRightCol = slotMap.get('topRight');
+      if (topRightCol !== undefined) {
         await focusByViewColumn(topRightCol);
       }
     },
@@ -345,25 +364,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       // グループが存在しないので 2x2 を作成
-      const newCols = await changeLayout(get2x2Layout());
+      await changeLayout(get2x2Layout(), '2x2');
 
-      if (newCols.length > 0) {
-        newCols.sort((a, b) => a - b);
-        const bottomRightCol = newCols[newCols.length - 1];
-        slotMap.set('bottomRight', bottomRightCol);
-
-        // 同時に作成された他のグループも未登録スロットに割り当て
-        if (newCols.length >= 2) {
-          const remainingCols = newCols.slice(0, -1);
-          const unregisteredSlots: SlotName[] = [];
-          if (!slotMap.has('bottomLeft')) unregisteredSlots.push('bottomLeft');
-          if (!slotMap.has('topRight')) unregisteredSlots.push('topRight');
-
-          for (let i = 0; i < Math.min(unregisteredSlots.length, remainingCols.length); i++) {
-            slotMap.set(unregisteredSlots[i], remainingCols[i]);
-          }
-        }
-
+      // changeLayout が slotMap を設定済みなので、直接フォーカス
+      const bottomRightCol = slotMap.get('bottomRight');
+      if (bottomRightCol !== undefined) {
         await focusByViewColumn(bottomRightCol);
       }
     },
