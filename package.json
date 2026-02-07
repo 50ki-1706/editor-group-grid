@@ -1,0 +1,63 @@
+{
+    "name": "editor-group-grid",
+    "displayName": "Editor Group Grid",
+    "description": "2x2エディターグループを制御するための拡張機能",
+    "version": "1.0.0",
+    "publisher": "local",
+    "engines": {
+        "vscode": "^1.74.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "editorGroupGrid.focusTopLeft",
+                "title": "Grid: Focus Top Left"
+            },
+            {
+                "command": "editorGroupGrid.focusBottomLeft",
+                "title": "Grid: Focus or Create Bottom Left"
+            },
+            {
+                "command": "editorGroupGrid.focusTopRight",
+                "title": "Grid: Focus or Create Top Right"
+            },
+            {
+                "command": "editorGroupGrid.focusBottomRight",
+                "title": "Grid: Focus or Create Bottom Right"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "editorGroupGrid.focusTopLeft",
+                "key": "ctrl+1"
+            },
+            {
+                "command": "editorGroupGrid.focusBottomLeft",
+                "key": "ctrl+2"
+            },
+            {
+                "command": "editorGroupGrid.focusTopRight",
+                "key": "ctrl+3"
+            },
+            {
+                "command": "editorGroupGrid.focusBottomRight",
+                "key": "ctrl+4"
+            }
+        ]
+    },
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.74.0",
+        "typescript": "^5.0.0"
+    }
+}
